@@ -1,25 +1,14 @@
 // app.js
 const express = require('express');
-const mongoose = require('mongoose');
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
-
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 const app = express();
 app.use(express.json());
 
-// --- Mongoose Schemas ---
-const UserSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, required: true, unique: true }
-});
-const User = mongoose.model('User', UserSchema);
-
-const PostSchema = new mongoose.Schema({
-  title: { type: String, required: true },
-  content: { type: String, required: true },
-  author: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
-});
-const Post = mongoose.model('Post', PostSchema);
+let users = [];
+let posts = [];
+let userIdCounter = 1;
+let postIdCounter = 1;
 
 
 // --- GUI Route ---
@@ -274,66 +263,84 @@ app.get('/', (req, res) => {
 // --- API Routes ---
 
 // Get all users
-app.get('/users', async (req, res) => {
-  try {
-    const users = await User.find();
-    res.status(200).json(users);
-  } catch (error) {
-    res.status(500).json({ message: 'Error fetching users', error });
-  }
+app.get('/users', (req, res) => {
+  res.status(200).json(users);
 });
 
 // Create a new user
-app.post('/users', async (req, res) => {
-  if (!req.body.name || !req.body.email) {
+app.post('/users', (req, res) => {
+  const { name, email } = req.body;
+  if (!name || !email) {
     return res.status(400).json({ message: 'Missing name or email' });
   }
-  try {
-    const newUser = new User(req.body);
-    await newUser.save();
-    res.status(201).json(newUser); // Changed to 201 for resource creation
-  } catch (error) {
-    // Handle duplicate email error
-    if (error.code === 11000) {
-      return res.status(409).json({ message: 'Email already exists' });
-    }
-    res.status(500).json({ message: 'Error creating user', error });
+
+  // Check for duplicate email
+  if (users.some(u => u.email === email)) {
+    return res.status(409).json({ message: 'Email already exists' });
   }
+
+  const newUser = { id: userIdCounter++, name, email };
+  users.push(newUser);
+  res.status(201).json(newUser);
 });
 
 // Get all posts
-app.get('/posts', async (req, res) => {
-    try {
-        const posts = await Post.find().populate('author', 'name');
-        res.status(200).json(posts);
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching posts', error });
-    }
+app.get('/posts', (req, res) => {
+  const populatedPosts = posts.map(post => {
+    const author = users.find(u => u.id === post.authorId);
+    return {
+      ...post,
+      author: { name: author?.name || 'Unknown' }
+    };
+  });
+  res.status(200).json(populatedPosts);
 });
+
+app.post('/posts', (req, res) => {
+  const { title, content, authorId } = req.body;
+  if (!title || !content || !authorId) {
+    return res.status(400).json({ message: 'Missing required fields' });
+  }
+
+  const userExists = users.find(u => u.id === authorId);
+  if (!userExists) {
+    return res.status(404).json({ message: 'Author not found' });
+  }
+
+  const newPost = { id: postIdCounter++, title, content, authorId };
+  posts.push(newPost);
+  res.status(201).json(newPost);
+});
+
 
 
 // Get external data and combine with local data
 // This route simulates fetching data from a third-party service
 app.get('/posts-with-external-data', async (req, res) => {
-    try {
-        const posts = await Post.find().populate('author', 'name').lean();
-        const externalApiResponse = await fetch('https://jsonplaceholder.typicode.com/todos/1');
+  try {
+    const populatedPosts = posts.map(post => {
+      const author = users.find(u => u.id === post.authorId);
+      return {
+        ...post,
+        author: { name: author?.name || 'Unknown' }
+      };
+    });
 
-        if (!externalApiResponse.ok) {
-            throw new Error('Failed to fetch external data');
-        }
-        
-        const externalData = await externalApiResponse.json();
-
-        const combinedData = posts.map(post => ({
-            ...post,
-            externalInfo: `External task: "${externalData.title}"`
-        }));
-
-        res.status(200).json(combinedData);
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching combined data', error: error.message });
+    const externalApiResponse = await fetch('https://jsonplaceholder.typicode.com/todos/1');
+    if (!externalApiResponse.ok) {
+      throw new Error('Failed to fetch external data');
     }
+    const externalData = await externalApiResponse.json();
+
+    const combinedData = populatedPosts.map(post => ({
+      ...post,
+      externalInfo: `External task: "${externalData.title}"`
+    }));
+
+    res.status(200).json(combinedData);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching combined data', error: error.message });
+  }
 });
 
 
@@ -342,4 +349,17 @@ app.use((req, res) => {
   res.status(404).json({ message: 'Not Found' });
 });
 
-module.exports = { app, User, Post };
+module.exports = {
+  app,
+  __test_data__: {
+    users,
+    posts,
+    resetData: () => {
+      users.length = 0;
+      posts.length = 0;
+      userIdCounter = 1;
+      postIdCounter = 1;
+    }
+  }
+};
+
